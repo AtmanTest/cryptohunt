@@ -64,32 +64,23 @@ def trend_score(coin: dict, history: list) -> dict:
     return result
 
 # ── Data fetching ───
-# Use CoinGecko markets endpoint (200 coins per page)
-COINGECKO_BASE = "https://api.coingecko.com/api/v3"
+COINDESK_BASE = "https://data-api.coindesk.com/asset/v1"
 
-async def fetch_coingecko_markets(client: httpx.AsyncClient, page: int = 1, per_page: int = 250) -> list[dict]:
-    """Get top coins by market cap from CoinGecko."""
+async def fetch_coindesk_page(client: httpx.AsyncClient, page: int = 1) -> list[dict]:
+    """Primary source: CoinDesk asset list, sorted by market cap desc (100 per page)."""
     try:
-        url = f"{COINGECKO_BASE}/coins/markets"
-        params = {
-            "vs_currency": "usd",
-            "order": "market_cap_desc",
-            "per_page": per_page,
-            "page": page,
-            "sparkline": "false",
-            "price_change_percentage": "24h",
-        }
-        headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-        resp = await client.get(url, params=params, headers=headers, timeout=20)
+        url = f"{COINDESK_BASE}/top/list"
+        params = {"limit": 100, "page": page, "sort_by": "CIRCULATING_MKT_CAP_USD", "sort_dir": "DESC"}
+        resp = await client.get(url, params=params, timeout=20,
+                                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
         if resp.status_code == 200:
-            data = resp.json()
-            print(f"[CRYPTOHUNT] CoinGecko markets: {len(data)} coins (page {page}), status {resp.status_code}")
+            data = resp.json().get("Data", {}).get("LIST", [])
+            print(f"[CRYPTOHUNT] CoinDesk page {page}: {len(data)} assets")
             return data
-        else:
-            print(f"[CRYPTOHUNT] CoinGecko markets status: {resp.status_code}")
-            return []
+        print(f"[CRYPTOHUNT] CoinDesk page {page}: HTTP {resp.status_code}")
+        return []
     except Exception as e:
-        print(f"[CRYPTOHUNT] CoinGecko markets error: {e}")
+        print(f"[CRYPTOHUNT] CoinDesk page {page} error: {e}")
         return []
 
 async def fetch_coinpaprika(client: httpx.AsyncClient) -> list[dict]:
@@ -107,19 +98,8 @@ async def fetch_coinpaprika(client: httpx.AsyncClient) -> list[dict]:
         return []
 
 async def fetch_global_meta(client: httpx.AsyncClient) -> dict:
-    """Global market data."""
-    meta = {"btc_dominance": None, "eth_dominance": None, "total_mcap": None, "fear_greed": None}
-    # CoinGecko global
-    try:
-        resp = await client.get(f"{COINGECKO_BASE}/global", timeout=10,
-                                headers={"User-Agent": "Mozilla/5.0"})
-        if resp.status_code == 200:
-            d = resp.json().get("data", {})
-            meta["total_mcap"] = d.get("total_market_cap", {}).get("usd")
-            mcap_pct = d.get("market_cap_percentage", {})
-            meta["btc_dominance"] = round(mcap_pct.get("btc", 0), 1)
-            meta["eth_dominance"] = round(mcap_pct.get("eth", 0), 1)
-    except: pass
+    """Global market data from Fear & Greed + DeFiLlama."""
+    meta = {"btc_dominance": None, "eth_dominance": None, "total_mcap": None, "fear_greed": None, "defi_tvl": None}
     # Fear & Greed
     try:
         resp = await client.get("https://api.alternative.me/fng/?limit=1", timeout=5)
@@ -128,87 +108,129 @@ async def fetch_global_meta(client: httpx.AsyncClient) -> dict:
             if d:
                 meta["fear_greed"] = {"value": int(d[0].get("value", 50)), "classification": d[0].get("value_classification", "Neutral")}
     except: pass
+    # DeFiLlama TVL total
+    try:
+        resp = await client.get("https://api.llama.fi/charts", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data:
+                meta["defi_tvl"] = {"value": data[-1].get("totalLiquidityUSD", 0), "source": "defillama"}
+    except: pass
+    # Dominance from CoinDesk (calculated from top 100)
+    try:
+        url = f"{COINDESK_BASE}/top/list"
+        params = {"limit": 100, "page": 1, "sort_by": "CIRCULATING_MKT_CAP_USD", "sort_dir": "DESC"}
+        resp = await client.get(url, params=params, timeout=10,
+                                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+        if resp.status_code == 200:
+            assets = resp.json().get("Data", {}).get("LIST", [])
+            total = sum(a.get("CIRCULATING_MKT_CAP_USD", 0) or 0 for a in assets)
+            if total > 0:
+                for a in assets:
+                    sym = a.get("SYMBOL", "")
+                    cap = a.get("CIRCULATING_MKT_CAP_USD", 0) or 0
+                    if sym == "BTC": meta["btc_dominance"] = round(cap / total * 100, 1)
+                    if sym == "ETH": meta["eth_dominance"] = round(cap / total * 100, 1)
+                meta["total_mcap"] = total
+    except: pass
     return meta
+
+def normalize_coindesk(a: dict) -> dict:
+    """Normalize a CoinDesk asset to our standard format."""
+    price = float(a.get("PRICE_USD", 0) or 0)
+    mcap = float(a.get("CIRCULATING_MKT_CAP_USD", 0) or 0)
+    vol = float(a.get("SPOT_MOVING_24_HOUR_QUOTE_VOLUME_USD", 0) or 0)
+    supply = float(a.get("SUPPLY_CIRCULATING", 0) or 0)
+    max_s = a.get("SUPPLY_MAX")
+    max_s = float(max_s) if max_s else None
+    chg = a.get("SPOT_MOVING_24_HOUR_CHANGE_PERCENTAGE_USD")
+    chg = round(float(chg), 2) if chg else None
+    rank = a.get("TOPLIST_BASE_RANK")
+    symbol = a.get("SYMBOL", "").upper()
+    name = a.get("NAME", "")
+    coin_id = f"cd_{symbol}"
+    vol_mcap = round(vol/mcap, 4) if mcap > 0 else 0
+
+    return {
+        "id": coin_id, "rank": rank, "name": name, "symbol": symbol,
+        "price": round(price, 8) if price < 0.01 else round(price, 4) if price < 1 else round(price, 2),
+        "price_raw": price, "mcap": int(mcap), "volume24h": int(vol),
+        "supply": int(supply), "max_supply": max_s, "change24h": chg, "vwap24h": None,
+        "vol_mcap_ratio": vol_mcap, "rsi_14": None, "sma_50": None, "sma_200": None,
+        "momentum_24h": chg, "trend_score": 50, "volume_spike": False,
+    }
+
+def normalize_coinpaprika(a: dict) -> dict:
+    """Normalize a CoinPaprika ticker to our format."""
+    q = a.get("quotes", {}).get("USD", {})
+    price = float(q.get("price", 0) or 0)
+    mcap = float(q.get("market_cap", 0) or 0)
+    vol = float(q.get("volume_24h", 0) or 0)
+    supply = float(a.get("circulating_supply", 0) or 0)
+    max_s = a.get("max_supply")
+    max_s = float(max_s) if max_s else None
+    chg = q.get("percent_change_24h")
+    chg = round(float(chg), 2) if chg else None
+    symbol = a.get("symbol", "").upper()
+    name = a.get("name", "")
+    coin_id = a.get("id", "")
+    vol_mcap = round(vol/mcap, 4) if mcap > 0 else 0
+
+    return {
+        "id": coin_id, "rank": a.get("rank"), "name": name, "symbol": symbol,
+        "price": round(price, 8) if price < 0.01 else round(price, 4) if price < 1 else round(price, 2),
+        "price_raw": price, "mcap": int(mcap), "volume24h": int(vol),
+        "supply": int(supply), "max_supply": max_s, "change24h": chg, "vwap24h": None,
+        "vol_mcap_ratio": vol_mcap, "rsi_14": None, "sma_50": None, "sma_200": None,
+        "momentum_24h": chg, "trend_score": 50, "volume_spike": False,
+    }
 
 # ── Refresh ───
 
 async def refresh_cache():
     async with httpx.AsyncClient() as client:
         try:
-            # Primary: CoinGecko markets
-            cg_data = await fetch_coingecko_markets(client, page=1, per_page=250)
-            # If we got <250, try page 2 for the rest
-            if len(cg_data) >= 200:
-                page2 = await fetch_coingecko_markets(client, page=2, per_page=100)
-                cg_data.extend(page2)
+            # Tier 1 — CoinDesk: 3 pages of 100 = top 300 by market cap
+            page1 = await fetch_coindesk_page(client, 1)
+            page2 = await fetch_coindesk_page(client, 2)
+            page3 = await fetch_coindesk_page(client, 3)
+            cd_assets = page1 + page2 + page3
 
-            assets = cg_data
-            source = "coingecko"
-
-            # Fallback: CoinPaprika if CG returned nothing
-            if not assets:
+            assets = []
+            source = None
+            if cd_assets:
+                assets = [normalize_coindesk(a) for a in cd_assets]
+                source = "coindesk"
+            else:
+                # Fallback — CoinPaprika
                 pap = await fetch_coinpaprika(client)
                 if pap:
-                    assets = pap
+                    # Get BTC dominance from Paprika
+                    total_mcap = sum(
+                        float(a.get("quotes", {}).get("USD", {}).get("market_cap", 0) or 0)
+                        for a in pap
+                    )
+                    print(f"[CRYPTOHUNT] CoinDesk failed, using CoinPaprika fallback")
+                    assets = [normalize_coinpaprika(a) for a in pap]
                     source = "coinpaprika"
 
             if not assets:
-                print(f"[CRYPTOHUNT] No data from any source, keeping old cache")
-                return  # keep old cache
+                print("[CRYPTOHUNT] No data from any source, keeping old cache")
+                return
 
             meta = await fetch_global_meta(client)
 
-            # ── Normalize assets to consistent format ──
-            processed = []
-            for a in assets:
-                if source == "coingecko":
-                    price = float(a.get("current_price", 0) or 0)
-                    mcap = float(a.get("market_cap", 0) or 0)
-                    vol = float(a.get("total_volume", 0) or 0)
-                    supply = float(a.get("circulating_supply", 0) or 0)
-                    max_s = a.get("max_supply")
-                    max_s = float(max_s) if max_s else None
-                    chg = a.get("price_change_percentage_24h")
-                    chg = round(float(chg), 2) if chg else None
-                    name = a.get("name", "")
-                    symbol = a.get("symbol", "").upper()
-                    coin_id = a.get("id", "")
-                else:  # coinpaprika
-                    q = a.get("quotes", {}).get("USD", {})
-                    price = float(q.get("price", 0) or 0)
-                    mcap = float(q.get("market_cap", 0) or 0)
-                    vol = float(q.get("volume_24h", 0) or 0)
-                    supply = float(a.get("circulating_supply", 0) or 0)
-                    max_s = a.get("max_supply")
-                    max_s = float(max_s) if max_s else None
-                    chg = q.get("percent_change_24h")
-                    chg = round(float(chg), 2) if chg else None
-                    name = a.get("name", "")
-                    symbol = a.get("symbol", "").upper()
-                    coin_id = a.get("id", "")
+            # Remove BTC (first, since sorted by mcap desc)
+            if assets and assets[0]["symbol"] == "BTC":
+                meta["btc"] = assets.pop(0)
 
-                vol_mcap = round(vol/mcap, 4) if mcap > 0 else 0
-
-                processed.append({
-                    "id": coin_id, "rank": None, "name": name, "symbol": symbol,
-                    "price": round(price, 8) if price < 0.01 else round(price, 4) if price < 1 else round(price, 2),
-                    "price_raw": price, "mcap": int(mcap), "volume24h": int(vol),
-                    "supply": int(supply), "max_supply": max_s, "change24h": chg, "vwap24h": None,
-                    "vol_mcap_ratio": vol_mcap, "rsi_14": None, "sma_50": None, "sma_200": None,
-                    "momentum_24h": chg, "trend_score": 50, "volume_spike": False,
-                })
-
-            # Remove BTC if it's first
-            if processed and processed[0]["symbol"] == "BTC":
-                meta["btc"] = processed.pop(0)
-
-            top_300 = processed[:300]
+            top_300 = assets[:300]
             now = int(time.time())
             async with LOCK:
                 _cache["data"] = top_300
                 _cache["meta"] = meta
                 _cache["ts"] = now
-                _cache["raw"] = processed
+                _cache["raw"] = assets
 
             print(f"[CRYPTOHUNT] Cache rafraîchi : {len(top_300)} coins via {source}, {datetime.now().isoformat()}")
 
