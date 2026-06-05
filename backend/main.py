@@ -108,13 +108,14 @@ async def fetch_global_meta(client: httpx.AsyncClient) -> dict:
             if d:
                 meta["fear_greed"] = {"value": int(d[0].get("value", 50)), "classification": d[0].get("value_classification", "Neutral")}
     except: pass
-    # DeFiLlama TVL total
+    # DeFiLlama TVL total (using /v2/chains which is lightweight)
     try:
-        resp = await client.get("https://api.llama.fi/charts", timeout=10)
+        resp = await client.get("https://api.llama.fi/v2/chains", timeout=10)
         if resp.status_code == 200:
-            data = resp.json()
-            if data:
-                meta["defi_tvl"] = {"value": data[-1].get("totalLiquidityUSD", 0), "source": "defillama"}
+            chains = resp.json()
+            total = sum(c.get("tvl", 0) or 0 for c in chains if isinstance(c, dict))
+            if total > 0:
+                meta["defi_tvl"] = {"value": total, "source": "defillama"}
     except: pass
     # Dominance from CoinDesk (calculated from top 100)
     try:
