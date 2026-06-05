@@ -264,6 +264,48 @@ async def debug():
                 results[name] = {"error": str(e)[:80]}
     return results
 
+@app.get("/api/test-apis")
+async def test_apis():
+    """Test toutes les APIs de la liste pour voir lesquelles répondent sur Render."""
+    apis = [
+        ("coingecko_pro", "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=1"),
+        ("coingecko_simple", "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"),
+        ("coingecko_global", "https://api.coingecko.com/api/v3/global"),
+        ("coincap", "https://api.coincap.io/v2/assets?limit=1"),
+        ("coinpaprika", "https://api.coinpaprika.com/v1/tickers?limit=1"),
+        ("coinmarketcap_pro", "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest?limit=1"),
+        ("binance_ticker", "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"),
+        ("binance_24hr", "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"),
+        ("coindesk_asset", "https://data-api.coindesk.com/asset/v1/top/list?limit=1"),
+        ("coincodex", "https://coincodex.com/api/coincodex/get_coin_summary/"),
+        ("dexscreener_pairs", "https://api.dexscreener.com/latest/v2/pairs/ethereum/0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
+        ("defillama_tvl", "https://api.llama.fi/tvl/uniswap"),
+        ("defillama_protocols", "https://api.llama.fi/protocols"),
+        ("1inch_health", "https://api.1inch.dev/swap/v6.0/1/healthcheck"),
+        ("bitquery", "https://graphql.bitquery.io/ide"),
+        ("mnemonic", "https://api.mnemonic.fi/ping"),
+        ("dune", "https://api.dune.com/api/v1/health"),
+        ("alternative_fng", "https://api.alternative.me/fng/?limit=1"),
+    ]
+    results = {}
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for name, url in apis:
+            try:
+                r = await client.get(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+                results[name] = {"status": r.status_code, "ok": r.status_code < 500}
+                if r.status_code == 429:
+                    results[name]["note"] = "rate_limited"
+                elif r.status_code == 403:
+                    results[name]["note"] = "forbidden_no_key"
+                elif 200 <= r.status_code < 300:
+                    body = r.text[:200]
+                    results[name]["preview"] = body[:100]
+            except httpx.TimeoutException:
+                results[name] = {"error": "timeout"}
+            except Exception as e:
+                results[name] = {"error": str(e)[:80]}
+    return results
+
 @app.get("/api/top300")
 async def get_top300():
     async with LOCK:
