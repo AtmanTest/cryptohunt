@@ -201,44 +201,55 @@ def normalize_coinpaprika(a: dict) -> dict:
 # ── Refresh ───
 
 async def refresh_cache():
+    print("[CRYPTOHUNT] refresh_cache START")
     async with httpx.AsyncClient() as client:
         try:
             # Tier 1 — CoinDesk: 3 pages of 100 = top 300 by market cap
             page1 = await fetch_coindesk_page(client, 1)
+            print(f"[CRYPTOHUNT] page1: {len(page1)} items")
             page2 = await fetch_coindesk_page(client, 2)
+            print(f"[CRYPTOHUNT] page2: {len(page2)} items")
             page3 = await fetch_coindesk_page(client, 3)
+            print(f"[CRYPTOHUNT] page3: {len(page3)} items")
             cd_assets = page1 + page2 + page3
+            print(f"[CRYPTOHUNT] cd_assets total: {len(cd_assets)}")
 
             assets = []
             source = None
             if cd_assets:
-                assets = [normalize_coindesk(a) for a in cd_assets]
-                source = "coindesk"
+                try:
+                    raw = [normalize_coindesk(a) for a in cd_assets]
+                    print(f"[CRYPTOHUNT] normalize_coindesk OK: {len(raw)} items")
+                    assets = raw
+                    source = "coindesk"
+                except Exception as norm_e:
+                    print(f"[CRYPTOHUNT] normalize_coindesk failed: {norm_e}")
+                    import traceback; traceback.print_exc()
             else:
-                # Fallback — CoinPaprika
+                print("[CRYPTOHUNT] CoinDesk empty, trying CoinPaprika fallback")
                 pap = await fetch_coinpaprika(client)
                 if pap:
-                    # Get BTC dominance from Paprika
                     total_mcap = sum(
                         float(a.get("quotes", {}).get("USD", {}).get("market_cap", 0) or 0)
                         for a in pap
                     )
-                    print(f"[CRYPTOHUNT] CoinDesk failed, using CoinPaprika fallback")
+                    print(f"[CRYPTOHUNT] Paprika fallback: {len(pap)} coins, total mcap {total_mcap}")
                     assets = [normalize_coinpaprika(a) for a in pap]
                     source = "coinpaprika"
 
+            print(f"[CRYPTOHUNT] assets after source selection: {len(assets)} from {source}")
             if not assets:
                 print("[CRYPTOHUNT] No data from any source, keeping old cache")
                 return
 
             meta = await fetch_global_meta(client)
+            print(f"[CRYPTOHUNT] meta: fear_greed={meta.get('fear_greed')}, defi_tvl={bool(meta.get('defi_tvl'))}, btc_dom={meta.get('btc_dominance')}")
 
-            # Remove BTC (first, since sorted by mcap desc)
             if assets and assets[0]["symbol"] == "BTC":
                 meta["btc"] = assets.pop(0)
+                print(f"[CRYPTOHUNT] BTC extracted: ${meta['btc']['price_raw']}")
 
             top_300 = assets[:300]
-            # Assign simple ranks 1-300
             for i, c in enumerate(top_300):
                 c["rank"] = i + 1
             now = int(time.time())
@@ -247,6 +258,7 @@ async def refresh_cache():
                 _cache["meta"] = meta
                 _cache["ts"] = now
                 _cache["raw"] = assets
+                print(f"[CRYPTOHUNT] CACHE SET: {len(top_300)} coins, ts={now}")
 
             print(f"[CRYPTOHUNT] Cache rafraîchi : {len(top_300)} coins via {source}, {datetime.now().isoformat()}")
 
