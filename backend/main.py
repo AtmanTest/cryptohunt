@@ -102,38 +102,51 @@ async def fetch_global_meta(client: httpx.AsyncClient) -> dict:
     meta = {"btc_dominance": None, "eth_dominance": None, "total_mcap": None, "fear_greed": None, "defi_tvl": None}
     # Fear & Greed
     try:
-        resp = await client.get("https://api.alternative.me/fng/?limit=1", timeout=5)
+        resp = await client.get("https://api.alternative.me/fng/?limit=1", timeout=5,
+                                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
         if resp.status_code == 200:
             d = resp.json().get("data", [])
             if d:
                 meta["fear_greed"] = {"value": int(d[0].get("value", 50)), "classification": d[0].get("value_classification", "Neutral")}
-    except: pass
-    # DeFiLlama TVL total (using /v2/chains which is lightweight)
+    except Exception as e:
+        print(f"[CRYPTOHUNT] F&G error: {e}")
+    # DeFiLlama TVL - using protocols (lightweight enough)
     try:
-        resp = await client.get("https://api.llama.fi/v2/chains", timeout=10)
+        resp = await client.get("https://api.llama.fi/protocols", timeout=15,
+                                headers={"User-Agent": "Mozilla/5.0"})
         if resp.status_code == 200:
-            chains = resp.json()
-            total = sum(c.get("tvl", 0) or 0 for c in chains if isinstance(c, dict))
+            data = resp.json()
+            total = 0
+            count = 0
+            for p in data:
+                if isinstance(p, dict):
+                    tvl = p.get("tvl", 0) or 0
+                    total += tvl
+                    count += 1
             if total > 0:
-                meta["defi_tvl"] = {"value": total, "source": "defillama"}
-    except: pass
-    # Dominance from CoinDesk (calculated from top 100)
+                meta["defi_tvl"] = {"value": total, "chains": count, "source": "defillama"}
+                print(f"[CRYPTOHUNT] DeFi TVL: ${total/1e9:.1f}B from {count} protocols")
+    except Exception as e:
+        print(f"[CRYPTOHUNT] DeFiLlama error: {e}")
+    # Dominance from CoinDesk (already fetched, but we calculate from top 100)
     try:
-        url = f"{COINDESK_BASE}/top/list"
-        params = {"limit": 100, "page": 1, "sort_by": "CIRCULATING_MKT_CAP_USD", "sort_dir": "DESC"}
-        resp = await client.get(url, params=params, timeout=10,
+        cd_url = f"{COINDESK_BASE}/top/list"
+        cd_params = {"limit": 100, "page": 1, "sort_by": "CIRCULATING_MKT_CAP_USD", "sort_dir": "DESC"}
+        resp = await client.get(cd_url, params=cd_params, timeout=10,
                                 headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
         if resp.status_code == 200:
             assets = resp.json().get("Data", {}).get("LIST", [])
-            total = sum(a.get("CIRCULATING_MKT_CAP_USD", 0) or 0 for a in assets)
+            total = sum(float(a.get("CIRCULATING_MKT_CAP_USD", 0) or 0) for a in assets)
             if total > 0:
                 for a in assets:
                     sym = a.get("SYMBOL", "")
-                    cap = a.get("CIRCULATING_MKT_CAP_USD", 0) or 0
+                    cap = float(a.get("CIRCULATING_MKT_CAP_USD", 0) or 0)
                     if sym == "BTC": meta["btc_dominance"] = round(cap / total * 100, 1)
                     if sym == "ETH": meta["eth_dominance"] = round(cap / total * 100, 1)
-                meta["total_mcap"] = total
-    except: pass
+                meta["total_mcap"] = int(total)
+                print(f"[CRYPTOHUNT] Dominance: BTC {meta['btc_dominance']}% / ETH {meta['eth_dominance']}%, total ${total/1e9:.1f}B")
+    except Exception as e:
+        print(f"[CRYPTOHUNT] Dominance error: {e}")
     return meta
 
 def normalize_coindesk(a: dict) -> dict:
@@ -276,18 +289,29 @@ async def health():
 async def debug():
     results = {}
     async with httpx.AsyncClient() as client:
-        for name, url in [
-            ("coindesk_p1", "https://data-api.coindesk.com/asset/v1/top/list?limit=3&page=1&sort_by=CIRCULATING_MKT_CAP_USD&sort_dir=DESC"),
-            ("coinpaprika", "https://api.coinpaprika.com/v1/tickers?limit=3"),
-            ("fng", "https://api.alternative.me/fng/?limit=1"),
-            ("defillama_tvl", "https://api.llama.fi/charts"),
+        for name, url, to in [
+            ("coindesk_p1", "https://data-api.coindesk.com/asset/v1/top/list?limit=100&page=1&sort_by=CIRCULATING_MKT_CAP_USD&sort_dir=DESC", 10),
+            ("coinpaprika", "https://api.coinpaprika.com/v1/tickers?limit=250", 20),
+            ("fng", "https://api.alternative.me/fng/?limit=1", 5),
+            ("defillama_protocols", "https://api.llama.fi/protocols", 15),
         ]:
             try:
-                r = await client.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
-                results[name] = {"status": r.status_code, "ok": r.status_code == 200}
+                r = await client.get(url, timeout=to, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+                results[name] = {"status": r.status_code, "ok": r.status_code == 200, "bytes": len(r.text)}
             except Exception as e:
                 results[name] = {"error": str(e)[:80]}
     return results
+
+@app.get("/api/refresh")
+async def manual_refresh():
+    """Force un rafraîchissement manuel du cache."""
+    try:
+        await refresh_cache()
+        async with LOCK:
+            return {"status": "ok", "coins": len(_cache["data"] or [])}
+    except Exception as e:
+        import traceback
+        return {"status": "error", "error": str(e), "traceback": traceback.format_exc()[:500]}
 
 @app.get("/api/test-apis")
 async def test_apis():
