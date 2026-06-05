@@ -277,6 +277,28 @@ async def health():
         age = int(time.time()) - _cache["ts"]
         return {"status": "ok", "coins_cached": len(_cache["data"] or []), "cache_age_seconds": age}
 
+@app.get("/api/debug")
+async def debug():
+    """Debug endpoint to check API connectivity."""
+    results = {}
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.get("https://api.coincap.io/v2/assets?limit=1", timeout=10)
+            results["coincap"] = {"status": r.status_code, "ok": r.status_code == 200}
+        except Exception as e:
+            results["coincap"] = {"error": str(e)}
+        try:
+            r = await client.get("https://api.coingecko.com/api/v3/global", timeout=10)
+            results["coingecko"] = {"status": r.status_code, "ok": r.status_code == 200}
+        except Exception as e:
+            results["coingecko"] = {"error": str(e)}
+        try:
+            r = await client.get("https://api.alternative.me/fng/?limit=1", timeout=5)
+            results["fng"] = {"status": r.status_code, "ok": r.status_code == 200}
+        except Exception as e:
+            results["fng"] = {"error": str(e)}
+    return results
+
 @app.get("/api/top300")
 async def get_top300():
     async with LOCK:
