@@ -145,7 +145,6 @@ def normalize_coindesk(a: dict) -> dict:
     max_s = float(max_s) if max_s else None
     chg = a.get("SPOT_MOVING_24_HOUR_CHANGE_PERCENTAGE_USD")
     chg = round(float(chg), 2) if chg else None
-    rank = a.get("TOPLIST_BASE_RANK")
     symbol = a.get("SYMBOL", "").upper()
     name = a.get("NAME", "")
     coin_id = f"cd_{symbol}"
@@ -225,6 +224,9 @@ async def refresh_cache():
                 meta["btc"] = assets.pop(0)
 
             top_300 = assets[:300]
+            # Assign simple ranks 1-300
+            for i, c in enumerate(top_300):
+                c["rank"] = i + 1
             now = int(time.time())
             async with LOCK:
                 _cache["data"] = top_300
@@ -261,7 +263,7 @@ async def _periodic_refresh():
 
 @app.get("/")
 async def root():
-    return {"name": "CryptoHunt API", "version": "2.0", "endpoints": ["/api/top300", "/api/snapshot", "/api/health", "/api/debug", "/ws"]}
+    return {"name": "CryptoHunt API", "version": "v7", "endpoints": ["/api/top300", "/api/snapshot", "/api/health", "/api/debug", "/api/test-apis", "/ws"]}
 
 @app.get("/api/health")
 async def health():
