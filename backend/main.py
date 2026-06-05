@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""CryptoHunt Backend — FastAPI sur Render, agrège CoinCap + CoinGecko."""
-
-import asyncio, json, time, math
+"""CryptoHunt Backend — FastAPI sur Render."""
+import asyncio, json, time, math, random
 from datetime import datetime, timezone
 from collections import deque
 
@@ -13,250 +12,228 @@ from fastapi.responses import JSONResponse
 app = FastAPI(title="CryptoHunt API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# ── Cache mémoire ────────────────────────────────────────────────
-_cache = {
-    "data": None,       # top 300 traités
-    "meta": {},          # dominance BTC, total MCAP, Fear & Greed
-    "ts": 0,             # timestamp dernier rafraîchissement
-    "raw": None,         # snapshot brut pour historique
-}
+_cache = {"data": None, "meta": {}, "ts": 0, "raw": None}
 LOCK = asyncio.Lock()
 WEBSOCKETS: set[WebSocket] = set()
 
-# ── Helpers ──────────────────────────────────────────────────────
+# ── Helpers ───────
 
 def rsi(prices: list[float], period: int = 14) -> float | None:
-    if len(prices) < period + 1:
-        return None
-    gains, losses = 0.0, 0.0
+    if len(prices) < period + 1: return None
+    gains = losses = 0.0
     for i in range(-period, 0):
-        diff = prices[i] - prices[i - 1]
-        if diff > 0:
-            gains += diff
-        else:
-            losses -= diff
-    avg_gain = gains / period
-    avg_loss = losses / period
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return round(100.0 - (100.0 / (1.0 + rs)), 1)
+        diff = prices[i] - prices[i-1]
+        if diff > 0: gains += diff
+        else: losses -= diff
+    avg_gain, avg_loss = gains/period, losses/period
+    if avg_loss == 0: return 100.0
+    return round(100.0 - 100.0/(1.0 + avg_gain/avg_loss), 1)
 
 def sma(prices: list[float], period: int) -> float | None:
-    if len(prices) < period:
-        return None
-    return round(sum(prices[-period:]) / period, 4)
-
-def momentum(prices: list[float]) -> float | None:
-    if len(prices) < 2:
-        return None
-    return round(((prices[-1] / prices[-2]) - 1) * 100, 2)
+    if len(prices) < period: return None
+    return round(sum(prices[-period:])/period, 4)
 
 def trend_score(coin: dict, history: list) -> dict:
-    """Calcule un score de tendance 0-100 plus le RSI/SMA."""
     prices = [h["price"] for h in history] if history else []
-    score = 50  # neutre
+    score = 50
     result = {"rsi_14": None, "sma_50": None, "sma_200": None, "momentum_24h": None, "trend_score": 50}
-
     if len(prices) >= 2:
-        mom = (prices[-1] / prices[-2] - 1) * 100
+        mom = (prices[-1]/prices[-2]-1)*100
         result["momentum_24h"] = round(mom, 2)
-        if mom > 5:
-            score += 15
-        elif mom > 2:
-            score += 8
-        elif mom < -5:
-            score -= 15
-        elif mom < -2:
-            score -= 8
-
+        if mom > 5: score += 15
+        elif mom > 2: score += 8
+        elif mom < -5: score -= 15
+        elif mom < -2: score -= 8
     r = rsi(prices)
     result["rsi_14"] = r
     if r is not None:
-        if r > 70:
-            score -= 10  # surachat
-        elif r < 30:
-            score += 10  # survendu → potentiel rebond
-        elif 40 <= r <= 60:
-            score += 5   # sain
-
+        if r > 70: score -= 10
+        elif r < 30: score += 10
+        elif 40 <= r <= 60: score += 5
     s50 = sma(prices, 50)
     result["sma_50"] = s50
     s200 = sma(prices, 200)
     result["sma_200"] = s200
-    if s50 and s200 and s50 > s200:
-        score += 10  # golden cross
-    elif s50 and s200 and s50 < s200:
-        score -= 10  # death cross
-
-    # Volume anormal
+    if s50 and s200 and s50 > s200: score += 10
+    elif s50 and s200 and s50 < s200: score -= 10
     if history:
-        avg_vol = sum(h.get("volume", 0) or 0 for h in history) / len(history)
-        current_vol = coin.get("volumeUsd", 0) or 0
-        if avg_vol > 0 and current_vol > avg_vol * 2:
-            score += 10
-            result["volume_spike"] = True
-        else:
-            result["volume_spike"] = False
-
+        avg_vol = sum(h.get("volume",0) or 0 for h in history)/len(history)
+        cur_vol = coin.get("volumeUsd",0) or 0
+        result["volume_spike"] = avg_vol > 0 and cur_vol > avg_vol*2
     result["trend_score"] = max(0, min(100, score))
     return result
 
-# ── Fetch CoinCap ────────────────────────────────────────────────
+# ── Data fetching ───
+# Use CoinGecko markets endpoint (200 coins per page)
+COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 
-async def fetch_coincap(client: httpx.AsyncClient, limit: int = 250) -> list[dict]:
-    """Récupère les top coins depuis CoinCap."""
+async def fetch_coingecko_markets(client: httpx.AsyncClient, page: int = 1, per_page: int = 250) -> list[dict]:
+    """Get top coins by market cap from CoinGecko."""
     try:
-        resp = await client.get(f"https://api.coincap.io/v2/assets?limit={limit}", timeout=15)
+        url = f"{COINGECKO_BASE}/coins/markets"
+        params = {
+            "vs_currency": "usd",
+            "order": "market_cap_desc",
+            "per_page": per_page,
+            "page": page,
+            "sparkline": "false",
+            "price_change_percentage": "24h",
+        }
+        headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+        resp = await client.get(url, params=params, headers=headers, timeout=20)
         if resp.status_code == 200:
-            return resp.json().get("data", [])
-    except Exception:
-        pass
-    return []
+            data = resp.json()
+            print(f"[CRYPTOHUNT] CoinGecko markets: {len(data)} coins (page {page}), status {resp.status_code}")
+            return data
+        else:
+            print(f"[CRYPTOHUNT] CoinGecko markets status: {resp.status_code}")
+            return []
+    except Exception as e:
+        print(f"[CRYPTOHUNT] CoinGecko markets error: {e}")
+        return []
 
-async def fetch_coincap_history(client: httpx.AsyncClient, coin_id: str, interval: str = "h1") -> list[dict]:
-    """Historique 7j pour les indicateurs techniques."""
+async def fetch_coinpaprika(client: httpx.AsyncClient) -> list[dict]:
+    """Fallback: CoinPaprika ticker endpoint."""
     try:
-        resp = await client.get(
-            f"https://api.coincap.io/v2/assets/{coin_id}/history?interval={interval}",
-            timeout=10
-        )
+        resp = await client.get("https://api.coinpaprika.com/v1/tickers?limit=250", timeout=20)
         if resp.status_code == 200:
-            return resp.json().get("data", [])
-    except Exception:
-        pass
-    return []
+            data = resp.json()
+            print(f"[CRYPTOHUNT] CoinPaprika: {len(data)} coins")
+            return data
+        print(f"[CRYPTOHUNT] CoinPaprika status: {resp.status_code}")
+        return []
+    except Exception as e:
+        print(f"[CRYPTOHUNT] CoinPaprika error: {e}")
+        return []
 
-# ── Fetch CoinGecko (complément) ────────────────────────────────
-
-async def fetch_coingecko_global(client: httpx.AsyncClient) -> dict:
-    """Dominance, Fear & Greed, total MCAP."""
+async def fetch_global_meta(client: httpx.AsyncClient) -> dict:
+    """Global market data."""
     meta = {"btc_dominance": None, "eth_dominance": None, "total_mcap": None, "fear_greed": None}
+    # CoinGecko global
     try:
-        resp = await client.get("https://api.coingecko.com/api/v3/global", timeout=10)
+        resp = await client.get(f"{COINGECKO_BASE}/global", timeout=10,
+                                headers={"User-Agent": "Mozilla/5.0"})
         if resp.status_code == 200:
             d = resp.json().get("data", {})
             meta["total_mcap"] = d.get("total_market_cap", {}).get("usd")
             mcap_pct = d.get("market_cap_percentage", {})
             meta["btc_dominance"] = round(mcap_pct.get("btc", 0), 1)
             meta["eth_dominance"] = round(mcap_pct.get("eth", 0), 1)
-    except Exception:
-        pass
+    except: pass
     # Fear & Greed
     try:
         resp = await client.get("https://api.alternative.me/fng/?limit=1", timeout=5)
         if resp.status_code == 200:
-            data = resp.json().get("data", [])
-            if data:
-                meta["fear_greed"] = {"value": int(data[0].get("value", 50)), "classification": data[0].get("value_classification", "Neutral")}
-    except Exception:
-        pass
+            d = resp.json().get("data", [])
+            if d:
+                meta["fear_greed"] = {"value": int(d[0].get("value", 50)), "classification": d[0].get("value_classification", "Neutral")}
+    except: pass
     return meta
 
-# ── Mise à jour du cache ─────────────────────────────────────────
+# ── Refresh ───
 
 async def refresh_cache():
     async with httpx.AsyncClient() as client:
         try:
-            assets = await fetch_coincap(client, 250)
-            meta = await fetch_coingecko_global(client)
+            # Primary: CoinGecko markets
+            cg_data = await fetch_coingecko_markets(client, page=1, per_page=250)
+            # If we got <250, try page 2 for the rest
+            if len(cg_data) >= 200:
+                page2 = await fetch_coingecko_markets(client, page=2, per_page=100)
+                cg_data.extend(page2)
+
+            assets = cg_data
+            source = "coingecko"
+
+            # Fallback: CoinPaprika if CG returned nothing
+            if not assets:
+                pap = await fetch_coinpaprika(client)
+                if pap:
+                    assets = pap
+                    source = "coinpaprika"
+                    # CoinPaprika format: id, name, symbol, quotes.USD.price, market_cap, volume_24h, percent_change_24h
+                    processed = []
+                    for a in assets:
+                        q = a.get("quotes", {}).get("USD", {})
+                        processed.append({
+                            "id": a.get("id"),
+                            "name": a.get("name"),
+                            "symbol": a.get("symbol", "").upper(),
+                            "current_price": q.get("price"),
+                            "market_cap": q.get("market_cap"),
+                            "total_volume": q.get("volume_24h"),
+                            "price_change_percentage_24h": q.get("percent_change_24h"),
+                            "circulating_supply": a.get("circulating_supply"),
+                            "max_supply": a.get("max_supply"),
+                        })
+                    assets = processed
 
             if not assets:
-                return
+                print(f"[CRYPTOHUNT] No data from any source, keeping old cache")
+                return  # keep old cache
 
-            assets.sort(key=lambda x: float(x.get("marketCapUsd", 0) or 0), reverse=True)
+            meta = await fetch_global_meta(client)
 
-            # Option 1 : en parallèle, on fetch l'historique des top 100 seulement (pour la perf)
-            top_100_ids = [a["id"] for a in assets[:100] if a.get("id")]
-            tasks = [fetch_coincap_history(client, cid) for cid in top_100_ids]
-            histories = await asyncio.gather(*tasks, return_exceptions=True)
-            history_map = {}
-            for cid, hist in zip(top_100_ids, histories):
-                if isinstance(hist, list) and hist:
-                    # Transformer pour analyse : prix et volume horaire
-                    prices = [{"price": float(h["priceUsd"]), "volume": float(h.get("volumeUsd", 0) or 0), "time": h["time"]} for h in hist[-336:]]  # 14 jours max
-                    history_map[cid] = prices
+            if source == "coingecko":
+                processed = []
+                for a in assets:
+                    price = float(a.get("current_price", 0) or 0)
+                    mcap = float(a.get("market_cap", 0) or 0)
+                    vol = float(a.get("total_volume", 0) or 0)
+                    supply = float(a.get("circulating_supply", 0) or 0)
+                    max_s = a.get("max_supply")
+                    max_s = float(max_s) if max_s else None
+                    chg = a.get("price_change_percentage_24h")
+                    chg = round(float(chg), 2) if chg else None
+                    vol_mcap = round(vol/mcap, 4) if mcap > 0 else 0
 
-            processed = []
-            for asset in assets:
-                coin_id = asset.get("id", "")
-                name = asset.get("name", "")
-                symbol = asset.get("symbol", "")
-                price = float(asset.get("priceUsd", 0) or 0)
-                mcap = float(asset.get("marketCapUsd", 0) or 0)
-                vol = float(asset.get("volumeUsd24Hr", 0) or 0)
-                supply = float(asset.get("supply", 0) or 0)
-                max_supply = asset.get("maxSupply")
-                if max_supply is not None:
-                    max_supply = float(max_supply)
+                    processed.append({
+                        "id": a.get("id"),
+                        "rank": None,
+                        "name": a.get("name"),
+                        "symbol": a.get("symbol", "").upper(),
+                        "price": round(price, 8) if price < 0.01 else round(price, 4) if price < 1 else round(price, 2),
+                        "price_raw": price,
+                        "mcap": int(mcap),
+                        "volume24h": int(vol),
+                        "supply": int(supply),
+                        "max_supply": max_s,
+                        "change24h": chg,
+                        "vwap24h": None,
+                        "vol_mcap_ratio": vol_mcap,
+                        "rsi_14": None, "sma_50": None, "sma_200": None,
+                        "momentum_24h": chg, "trend_score": 50, "volume_spike": False,
+                    })
 
-                # Changement 24h
-                change_24h = asset.get("changePercent24Hr")
-                change_24h = round(float(change_24h), 2) if change_24h else None
+                # Remove BTC if it's first
+                if processed and processed[0]["symbol"] == "BTC":
+                    meta["btc"] = processed.pop(0)
 
-                # VWAP 24h
-                vwap = asset.get("vwap24Hr")
-                vwap = round(float(vwap), 2) if vwap else None
-
-                # Calcul volume/mcap ratio
-                vol_mcap_ratio = round(vol / mcap, 4) if mcap > 0 else 0
-
-                # Indicateurs techniques
-                history = history_map.get(coin_id, [])
-                indicators = trend_score(asset, history)
-
-                coin = {
-                    "id": coin_id,
-                    "rank": asset.get("rank"),
-                    "name": name,
-                    "symbol": symbol.upper(),
-                    "price": round(price, 8) if price < 0.01 else round(price, 4) if price < 1 else round(price, 2),
-                    "price_raw": price,
-                    "mcap": int(mcap),
-                    "volume24h": int(vol),
-                    "supply": int(supply),
-                    "max_supply": max_supply,
-                    "change24h": change_24h,
-                    "vwap24h": vwap,
-                    "vol_mcap_ratio": vol_mcap_ratio,
-                    **indicators,
-                }
-                processed.append(coin)
-
-            # Si on a BTC en premier, le retirer du top 300
-            if processed and processed[0]["symbol"] == "BTC":
-                btc = processed.pop(0)
-                meta["btc"] = btc
-
-            # Top 300 : prendre les 300 suivants
             top_300 = processed[:300]
-
             now = int(time.time())
             async with LOCK:
                 _cache["data"] = top_300
                 _cache["meta"] = meta
                 _cache["ts"] = now
-                _cache["raw"] = processed  # avec BTC
+                _cache["raw"] = processed
 
-            print(f"[CRYPTOHUNT] Cache rafraîchi : {len(top_300)} coins, {datetime.now().isoformat()}")
+            print(f"[CRYPTOHUNT] Cache rafraîchi : {len(top_300)} coins via {source}, {datetime.now().isoformat()}")
 
-            # Notifier les websockets
             payload = json.dumps({"type": "update", "coins": top_300, "meta": meta, "ts": now})
             dead = set()
             for ws in WEBSOCKETS:
-                try:
-                    await ws.send_text(payload)
-                except Exception:
-                    dead.add(ws)
+                try: await ws.send_text(payload)
+                except: dead.add(ws)
             WEBSOCKETS -= dead
-
         except Exception as e:
-            print(f"[CRYPTOHUNT] Erreur refresh : {e}")
+            print(f"[CRYPTOHUNT] refresh_cache error: {e}")
+            import traceback; traceback.print_exc()
 
-# ── Background refresh toutes les 90s ────────────────────────────
+# ── Startup ───
 
 @app.on_event("startup")
 async def startup():
+    print("[CRYPTOHUNT] Server starting, first refresh...")
     await refresh_cache()
     asyncio.create_task(_periodic_refresh())
 
@@ -265,11 +242,11 @@ async def _periodic_refresh():
         await asyncio.sleep(90)
         await refresh_cache()
 
-# ── Routes ───────────────────────────────────────────────────────
+# ── Routes ───
 
 @app.get("/")
 async def root():
-    return {"name": "CryptoHunt API", "version": "1.0", "endpoints": ["/api/top300", "/api/snapshot", "/api/health", "/ws"]}
+    return {"name": "CryptoHunt API", "version": "2.0", "endpoints": ["/api/top300", "/api/snapshot", "/api/health", "/api/debug", "/ws"]}
 
 @app.get("/api/health")
 async def health():
@@ -279,24 +256,19 @@ async def health():
 
 @app.get("/api/debug")
 async def debug():
-    """Debug endpoint to check API connectivity."""
     results = {}
     async with httpx.AsyncClient() as client:
-        try:
-            r = await client.get("https://api.coincap.io/v2/assets?limit=1", timeout=10)
-            results["coincap"] = {"status": r.status_code, "ok": r.status_code == 200}
-        except Exception as e:
-            results["coincap"] = {"error": str(e)}
-        try:
-            r = await client.get("https://api.coingecko.com/api/v3/global", timeout=10)
-            results["coingecko"] = {"status": r.status_code, "ok": r.status_code == 200}
-        except Exception as e:
-            results["coingecko"] = {"error": str(e)}
-        try:
-            r = await client.get("https://api.alternative.me/fng/?limit=1", timeout=5)
-            results["fng"] = {"status": r.status_code, "ok": r.status_code == 200}
-        except Exception as e:
-            results["fng"] = {"error": str(e)}
+        for name, url in [
+            ("coingecko_markets", f"{COINGECKO_BASE}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=1&page=1"),
+            ("coingecko_global", f"{COINGECKO_BASE}/global"),
+            ("coinpaprika", "https://api.coinpaprika.com/v1/tickers?limit=1"),
+            ("fng", "https://api.alternative.me/fng/?limit=1"),
+        ]:
+            try:
+                r = await client.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                results[name] = {"status": r.status_code, "ok": r.status_code == 200}
+            except Exception as e:
+                results[name] = {"error": str(e)[:80]}
     return results
 
 @app.get("/api/top300")
@@ -304,33 +276,23 @@ async def get_top300():
     async with LOCK:
         if not _cache["data"]:
             return JSONResponse({"error": "Cache pas encore prêt"}, status_code=503)
-        return {
-            "coins": _cache["data"],
-            "meta": _cache["meta"],
-            "ts": _cache["ts"],
-            "count": len(_cache["data"]),
-        }
+        return {"coins": _cache["data"], "meta": _cache["meta"], "ts": _cache["ts"], "count": len(_cache["data"])}
 
 @app.get("/api/snapshot")
 async def get_snapshot():
-    """Snapshot historique pour GitHub Actions."""
     async with LOCK:
         return {"ts": _cache["ts"], "coins": _cache["data"], "meta": _cache["meta"]}
-
-# ── WebSocket ────────────────────────────────────────────────────
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     WEBSOCKETS.add(ws)
-    # Envoi immédiat des données actuelles
     async with LOCK:
         if _cache["data"]:
             payload = json.dumps({"type": "update", "coins": _cache["data"], "meta": _cache["meta"], "ts": _cache["ts"]})
             await ws.send_text(payload)
     try:
-        while True:
-            await ws.receive_text()  # keepalive
+        while True: await ws.receive_text()
     except WebSocketDisconnect:
         WEBSOCKETS.discard(ws)
 
