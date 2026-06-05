@@ -173,7 +173,7 @@ def normalize_coindesk(a: dict) -> dict:
     vol_mcap = round(vol/mcap, 4) if mcap > 0 else 0
 
     return {
-        "id": coin_id, "rank": rank, "name": name, "symbol": symbol,
+        "id": coin_id, "rank": None, "name": name, "symbol": symbol,
         "price": round(price, 8) if price < 0.01 else round(price, 4) if price < 1 else round(price, 2),
         "price_raw": price, "mcap": int(mcap), "volume24h": int(vol),
         "supply": int(supply), "max_supply": max_s, "change24h": chg, "vwap24h": None,
