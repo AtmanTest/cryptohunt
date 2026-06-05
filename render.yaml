@@ -5,7 +5,7 @@ services:
     repo: https://github.com/AtmanTest/cryptohunt
     branch: main
     buildCommand: pip install -r backend/requirements.txt
-    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: cd backend && gunicorn main:app --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --workers 4 --timeout 120
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION

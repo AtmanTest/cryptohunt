@@ -276,13 +276,13 @@ async def debug():
     results = {}
     async with httpx.AsyncClient() as client:
         for name, url in [
-            ("coingecko_markets", f"{COINGECKO_BASE}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=1&page=1"),
-            ("coingecko_global", f"{COINGECKO_BASE}/global"),
-            ("coinpaprika", "https://api.coinpaprika.com/v1/tickers?limit=1"),
+            ("coindesk_p1", "https://data-api.coindesk.com/asset/v1/top/list?limit=3&page=1&sort_by=CIRCULATING_MKT_CAP_USD&sort_dir=DESC"),
+            ("coinpaprika", "https://api.coinpaprika.com/v1/tickers?limit=3"),
             ("fng", "https://api.alternative.me/fng/?limit=1"),
+            ("defillama_tvl", "https://api.llama.fi/charts"),
         ]:
             try:
-                r = await client.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                r = await client.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
                 results[name] = {"status": r.status_code, "ok": r.status_code == 200}
             except Exception as e:
                 results[name] = {"error": str(e)[:80]}
@@ -358,3 +358,39 @@ async def websocket_endpoint(ws: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+
+@app.get("/api/diag")
+async def diag():
+    """Diagnostics détaillés pour debugger le refresh."""
+    import traceback
+    result = {"cache": {}}
+    async with LOCK:
+        result["cache"]["age"] = int(time.time()) - _cache["ts"]
+        result["cache"]["coins"] = len(_cache["data"] or [])
+        result["cache"]["meta_keys"] = list((_cache.get("meta") or {}).keys())
+
+    async with httpx.AsyncClient() as client:
+        for page in [1, 2, 3]:
+            try:
+                url = "https://data-api.coindesk.com/asset/v1/top/list"
+                params = {"limit": 100, "page": page, "sort_by": "CIRCULATING_MKT_CAP_USD", "sort_dir": "DESC"}
+                r = await client.get(url, params=params, timeout=15,
+                                     headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+                if r.status_code == 200:
+                    data = r.json().get("Data", {}).get("LIST", [])
+                    result[f"coindesk_p{page}"] = {"status": 200, "count": len(data)}
+                    if data:
+                        result[f"coindesk_p{page}"]["first_sym"] = data[0].get("SYMBOL", "")
+                        result[f"coindesk_p{page}"]["first_price"] = data[0].get("PRICE_USD")
+                else:
+                    result[f"coindesk_p{page}"] = {"status": r.status_code, "body": r.text[:100]}
+            except Exception as e:
+                result[f"coindesk_p{page}"] = {"error": str(e)[:200]}
+
+        try:
+            r = await client.get("https://api.coinpaprika.com/v1/tickers?limit=5", timeout=15)
+            result["paprika"] = {"status": r.status_code}
+        except Exception as e:
+            result["paprika"] = {"error": str(e)[:100]}
+
+    return result
