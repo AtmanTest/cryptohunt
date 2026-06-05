@@ -151,22 +151,6 @@ async def refresh_cache():
                 if pap:
                     assets = pap
                     source = "coinpaprika"
-                    # CoinPaprika format: id, name, symbol, quotes.USD.price, market_cap, volume_24h, percent_change_24h
-                    processed = []
-                    for a in assets:
-                        q = a.get("quotes", {}).get("USD", {})
-                        processed.append({
-                            "id": a.get("id"),
-                            "name": a.get("name"),
-                            "symbol": a.get("symbol", "").upper(),
-                            "current_price": q.get("price"),
-                            "market_cap": q.get("market_cap"),
-                            "total_volume": q.get("volume_24h"),
-                            "price_change_percentage_24h": q.get("percent_change_24h"),
-                            "circulating_supply": a.get("circulating_supply"),
-                            "max_supply": a.get("max_supply"),
-                        })
-                    assets = processed
 
             if not assets:
                 print(f"[CRYPTOHUNT] No data from any source, keeping old cache")
@@ -174,9 +158,10 @@ async def refresh_cache():
 
             meta = await fetch_global_meta(client)
 
-            if source == "coingecko":
-                processed = []
-                for a in assets:
+            # ── Normalize assets to consistent format ──
+            processed = []
+            for a in assets:
+                if source == "coingecko":
                     price = float(a.get("current_price", 0) or 0)
                     mcap = float(a.get("market_cap", 0) or 0)
                     vol = float(a.get("total_volume", 0) or 0)
@@ -185,29 +170,37 @@ async def refresh_cache():
                     max_s = float(max_s) if max_s else None
                     chg = a.get("price_change_percentage_24h")
                     chg = round(float(chg), 2) if chg else None
-                    vol_mcap = round(vol/mcap, 4) if mcap > 0 else 0
+                    name = a.get("name", "")
+                    symbol = a.get("symbol", "").upper()
+                    coin_id = a.get("id", "")
+                else:  # coinpaprika
+                    q = a.get("quotes", {}).get("USD", {})
+                    price = float(q.get("price", 0) or 0)
+                    mcap = float(q.get("market_cap", 0) or 0)
+                    vol = float(q.get("volume_24h", 0) or 0)
+                    supply = float(a.get("circulating_supply", 0) or 0)
+                    max_s = a.get("max_supply")
+                    max_s = float(max_s) if max_s else None
+                    chg = q.get("percent_change_24h")
+                    chg = round(float(chg), 2) if chg else None
+                    name = a.get("name", "")
+                    symbol = a.get("symbol", "").upper()
+                    coin_id = a.get("id", "")
 
-                    processed.append({
-                        "id": a.get("id"),
-                        "rank": None,
-                        "name": a.get("name"),
-                        "symbol": a.get("symbol", "").upper(),
-                        "price": round(price, 8) if price < 0.01 else round(price, 4) if price < 1 else round(price, 2),
-                        "price_raw": price,
-                        "mcap": int(mcap),
-                        "volume24h": int(vol),
-                        "supply": int(supply),
-                        "max_supply": max_s,
-                        "change24h": chg,
-                        "vwap24h": None,
-                        "vol_mcap_ratio": vol_mcap,
-                        "rsi_14": None, "sma_50": None, "sma_200": None,
-                        "momentum_24h": chg, "trend_score": 50, "volume_spike": False,
-                    })
+                vol_mcap = round(vol/mcap, 4) if mcap > 0 else 0
 
-                # Remove BTC if it's first
-                if processed and processed[0]["symbol"] == "BTC":
-                    meta["btc"] = processed.pop(0)
+                processed.append({
+                    "id": coin_id, "rank": None, "name": name, "symbol": symbol,
+                    "price": round(price, 8) if price < 0.01 else round(price, 4) if price < 1 else round(price, 2),
+                    "price_raw": price, "mcap": int(mcap), "volume24h": int(vol),
+                    "supply": int(supply), "max_supply": max_s, "change24h": chg, "vwap24h": None,
+                    "vol_mcap_ratio": vol_mcap, "rsi_14": None, "sma_50": None, "sma_200": None,
+                    "momentum_24h": chg, "trend_score": 50, "volume_spike": False,
+                })
+
+            # Remove BTC if it's first
+            if processed and processed[0]["symbol"] == "BTC":
+                meta["btc"] = processed.pop(0)
 
             top_300 = processed[:300]
             now = int(time.time())
