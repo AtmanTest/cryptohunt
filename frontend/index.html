@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CryptoHunt — Top 300 Altcoins</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦊</text></svg>">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;scrollbar-width:thin}
+:root{--bg:#0d1117;--surface:#161b22;--surface2:#1c2333;--border:#30363d;--text:#e6edf3;--text2:#8b949e;--green:#3fb950;--red:#f85149;--blue:#58a6ff;--orange:#d29922;--purple:#bc8cff}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,sans-serif;font-size:14px;min-height:100vh}
+.container{max-width:1400px;margin:0 auto;padding:16px}
+/* HEADER */
+.header{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);margin-bottom:16px}
+.header h1{font-size:22px;background:linear-gradient(135deg,#f7931a,#8dc53f,#627eea);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.header-info{display:flex;flex-wrap:wrap;gap:10px;margin-left:auto;font-size:13px}
+.badge{padding:4px 10px;border-radius:20px;background:var(--surface2);border:1px solid var(--border);font-size:12px}
+.badge.green{border-color:var(--green);color:var(--green)}
+.badge.red{border-color:var(--red);color:var(--red)}
+.badge.orange{border-color:var(--orange);color:var(--orange)}
+.badge.blue{border-color:var(--blue);color:var(--blue)}
+.badge.purple{border-color:var(--purple);color:var(--purple)}
+.badge.white{border-color:var(--text);color:var(--text)}
+.badge.live{background:var(--green);color:var(--bg);border:none;animation:pulse 2s infinite}
+@keyframes pulse{0%{opacity:1}50%{opacity:.6}100%{opacity:1}}
+.last-updated{color:var(--text2);font-size:11px;line-height:24px}
+/* CONTROLS */
+.controls{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px}
+.search-box{flex:1;min-width:200px;padding:8px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:14px;outline:none}
+.search-box:focus{border-color:var(--blue)}
+.controls select{padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer;outline:none}
+/* TABLE */
+.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border)}
+table{width:100%;border-collapse:collapse;white-space:nowrap}
+thead{position:sticky;top:0;z-index:10}
+th{background:var(--surface);padding:10px 12px;text-align:right;font-size:11px;text-transform:uppercase;color:var(--text2);letter-spacing:.5px;cursor:pointer;user-select:none;border-bottom:2px solid var(--border)}
+th:first-child{text-align:center;width:36px}
+th:nth-child(2){text-align:left;min-width:200px}
+th:hover{color:var(--text)}
+th .sort-arrow{display:inline-block;margin-left:4px;font-size:10px}
+td{padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px;text-align:right}
+td:first-child{text-align:center;color:var(--text2)}
+td:nth-child(2){text-align:left;font-weight:500}
+.coin-name{display:flex;align-items:center;gap:8px}
+.coin-symbol{color:var(--text2);font-size:11px;font-weight:400}
+.rank{font-size:11px;color:var(--text2)}
+.price-up{color:var(--green)}
+.price-down{color:var(--red)}
+.trend-badge{display:inline-block;padding:2px 7px;border-radius:12px;font-size:11px;font-weight:600}
+.trend-high{background:#1a3a2a;color:var(--green)}
+.trend-mid{background:#1c2333;color:var(--orange)}
+.trend-low{background:#2d1b1b;color:var(--red)}
+.volume-spike{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--orange);margin-left:6px;animation:pulse 1.5s infinite}
+/* RSI */
+.rsi-normal{color:var(--text2)}
+.rsi-hot{color:var(--red)}
+.rsi-cold{color:var(--green)}
+/* FOOTER */
+.footer{text-align:center;padding:20px;color:var(--text2);font-size:12px}
+.footer a{color:var(--blue);text-decoration:none}
+/* RESPONSIVE */
+@media(max-width:768px){
+  .container{padding:8px}
+  .header h1{font-size:18px}
+  .header-info{gap:6px;margin-left:0;width:100%}
+  table{font-size:12px}
+  th,td{padding:6px 8px}
+  .controls select{font-size:12px}
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🦊 CryptoHunt</h1>
+    <div class="header-info">
+      <span class="badge live">LIVE</span>
+      <span id="badge-total" class="badge white">— coins</span>
+      <span id="badge-btc-dom" class="badge orange">BTC —%</span>
+      <span id="badge-fng" class="badge">Fear&Greed —</span>
+      <span id="badge-total-mcap" class="badge blue">$— T</span>
+      <span class="last-updated" id="last-updated">—</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <input type="text" class="search-box" id="search" placeholder="Rechercher un coin (nom ou symbole)..." oninput="applyFilters()">
+    <select id="filter-trend" onchange="applyFilters()">
+      <option value="all">Tous les coins</option>
+      <option value="strong-buy">Strong Buy (score ≥ 70)</option>
+      <option value="buy">Buy (score 50-69)</option>
+      <option value="neutral">Neutral (score 30-49)</option>
+      <option value="sell">Sell (score &lt; 30)</option>
+      <option value="volume">Volume Spike</option>
+    </select>
+    <select id="sort-by" onchange="applyFilters()">
+      <option value="mcap">MCAP ↓</option>
+      <option value="score">Trend Score ↓</option>
+      <option value="change24h">24h Change ↓</option>
+      <option value="volume">Volume 24h ↓</option>
+      <option value="name">Nom A-Z</option>
+    </select>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Coin</th>
+          <th>Price</th>
+          <th>MCAP</th>
+          <th>Vol 24h</th>
+          <th>24h Δ</th>
+          <th>RSI 14</th>
+          <th>Score</th>
+        </tr>
+      </thead>
+      <tbody id="coin-table"></tbody>
+    </table>
+  </div>
+
+  <div class="footer">
+    <span>Data: CoinCap · CoinGecko · Alternative.me</span> ·
+    <a href="https://github.com/AtmanTest/cryptohunt" target="_blank">GitHub</a>
+  </div>
+</div>
+
+<script>
+// ── Config ──────────────────────────────────────────────────────
+const WS_URL = 'wss://cryptohunt.onrender.com/ws';
+const API_URL = 'https://cryptohunt.onrender.com/api';
+
+let coins = [];
+let meta = {};
+
+// ── Format helpers ─────────────────────────────────────────────
+function fmtPrice(p) {
+  if (p === null || p === undefined) return '—';
+  if (p < 0.0001) return p.toExponential(2);
+  if (p < 0.01) return p.toFixed(6);
+  if (p < 1) return p.toFixed(4);
+  if (p < 1000) return p.toFixed(2);
+  return p.toLocaleString('en-US', {maximumFractionDigits: 2});
+}
+
+function fmtLarge(n) {
+  if (!n && n !== 0) return '—';
+  if (n >= 1e12) return '$' + (n / 1e12).toFixed(2) + ' T';
+  if (n >= 1e9) return '$' + (n / 1e9).toFixed(2) + ' B';
+  if (n >= 1e6) return '$' + (n / 1e6).toFixed(2) + ' M';
+  return '$' + n.toLocaleString();
+}
+
+function fmtChange(pct) {
+  if (pct === null || pct === undefined) return '—';
+  const sign = pct >= 0 ? '+' : '';
+  return sign + pct.toFixed(2) + '%';
+}
+
+function trendClass(score) {
+  if (score >= 70) return 'trend-high';
+  if (score >= 50) return 'trend-mid';
+  return 'trend-low';
+}
+
+function trendLabel(score) {
+  if (score >= 70) return 'Strong Buy';
+  if (score >= 50) return 'Buy';
+  if (score >= 30) return 'Neutral';
+  return 'Sell';
+}
+
+function rsiClass(rsi) {
+  if (rsi === null || rsi === undefined) return '';
+  if (rsi > 70) return 'rsi-hot';
+  if (rsi < 30) return 'rsi-cold';
+  return 'rsi-normal';
+}
+
+const MCAP_COLORS = ['#f7931a', '#627eea', '#ff0420', '#26a17b', '#2775ca', '#f0b90b', '#a2a6d0', '#da4e53',
+  '#345d9d', '#1f7b3a', '#ff6b35', '#00d4aa', '#6c27ff', '#0a8cf0', '#f7931a'];
+
+function coinColor(symbol, index) {
+  let hash = 0;
+  for (let i = 0; i < symbol.length; i++) hash = symbol.charCodeAt(i) + ((hash << 5) - hash);
+  return MCAP_COLORS[Math.abs(hash) % MCAP_COLORS.length];
+}
+
+// ── Render ──────────────────────────────────────────────────────
+function render(data) {
+  coins = data.coins || [];
+  meta = data.meta || {};
+  applyFilters();
+  updateHeader();
+}
+
+function updateHeader() {
+  document.getElementById('badge-total').textContent = coins.length + ' coins';
+  if (meta.btc_dominance !== null && meta.btc_dominance !== undefined) {
+    document.getElementById('badge-btc-dom').textContent = 'BTC ' + meta.btc_dominance.toFixed(1) + '%';
+  }
+  if (meta.fear_greed && meta.fear_greed.value) {
+    const fg = meta.fear_greed;
+    document.getElementById('badge-fng').textContent = 'F&G ' + fg.value + ' · ' + fg.classification;
+    document.getElementById('badge-fng').className = 'badge ' + (fg.value >= 50 ? 'green' : 'red');
+  }
+  if (meta.total_mcap) {
+    document.getElementById('badge-total-mcap').textContent = fmtLarge(meta.total_mcap);
+  }
+  if (data.ts) {
+    const d = new Date(data.ts * 1000);
+    document.getElementById('last-updated').textContent = '⏱ ' + d.toLocaleTimeString();
+  }
+}
+
+function applyFilters() {
+  const search = document.getElementById('search').value.toLowerCase().trim();
+  const trendFilter = document.getElementById('filter-trend').value;
+  const sortBy = document.getElementById('sort-by').value;
+
+  let filtered = [...coins];
+
+  // Search
+  if (search) {
+    filtered = filtered.filter(c =>
+      c.name.toLowerCase().includes(search) ||
+      c.symbol.toLowerCase().includes(search)
+    );
+  }
+
+  // Trend filter
+  if (trendFilter !== 'all') {
+    switch(trendFilter) {
+      case 'strong-buy': filtered = filtered.filter(c => c.trend_score >= 70); break;
+      case 'buy': filtered = filtered.filter(c => c.trend_score >= 50 && c.trend_score < 70); break;
+      case 'neutral': filtered = filtered.filter(c => c.trend_score >= 30 && c.trend_score < 50); break;
+      case 'sell': filtered = filtered.filter(c => c.trend_score < 30); break;
+      case 'volume': filtered = filtered.filter(c => c.volume_spike); break;
+    }
+  }
+
+  // Sort
+  switch(sortBy) {
+    case 'mcap': filtered.sort((a, b) => (b.mcap || 0) - (a.mcap || 0)); break;
+    case 'score': filtered.sort((a, b) => (b.trend_score || 0) - (a.trend_score || 0)); break;
+    case 'change24h': filtered.sort((a, b) => (b.change24h || 0) - (a.change24h || 0)); break;
+    case 'volume': filtered.sort((a, b) => (b.volume24h || 0) - (a.volume24h || 0)); break;
+    case 'name': filtered.sort((a, b) => a.name.localeCompare(b.name)); break;
+  }
+
+  // Build table
+  const tbody = document.getElementById('coin-table');
+  tbody.innerHTML = '';
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text2)">Aucun coin trouvé</td></tr>';
+    return;
+  }
+
+  for (const coin of filtered) {
+    const tr = document.createElement('tr');
+    const changeUp = (coin.change24h || 0) >= 0;
+    const color = coinColor(coin.symbol, coin.rank || 0);
+
+    tr.innerHTML = `
+      <td><span class="rank">#${coin.rank || '—'}</span></td>
+      <td>
+        <div class="coin-name">
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0"></span>
+          ${coin.name}
+          <span class="coin-symbol">${coin.symbol}</span>
+          ${coin.volume_spike ? '<span class="volume-spike" title="Volume Spike!"></span>' : ''}
+        </div>
+      </td>
+      <td class="${changeUp ? 'price-up' : 'price-down'}">$${fmtPrice(coin.price_raw)}</td>
+      <td>${fmtLarge(coin.mcap)}</td>
+      <td>${fmtLarge(coin.volume24h)}</td>
+      <td class="${changeUp ? 'price-up' : 'price-down'}">${fmtChange(coin.change24h)}</td>
+      <td class="${rsiClass(coin.rsi_14)}">${coin.rsi_14 !== null ? coin.rsi_14.toFixed(1) : '—'}</td>
+      <td><span class="trend-badge ${trendClass(coin.trend_score)}">${trendLabel(coin.trend_score)}</span></td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+// ── WebSocket ───────────────────────────────────────────────────
+let ws = null;
+
+function connectWS() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+  try {
+    ws = new WebSocket(WS_URL);
+    ws.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'update' && data.coins) render(data);
+      } catch(err) {}
+    };
+    ws.onclose = () => { setTimeout(connectWS, 3000); };
+    ws.onerror = () => {};
+  } catch(e) {
+    setTimeout(connectWS, 3000);
+  }
+}
+
+// ── Fallback HTTP ───────────────────────────────────────────────
+async function fetchHTTP() {
+  try {
+    const resp = await fetch(API_URL + '/top300');
+    if (resp.ok) {
+      const data = await resp.json();
+      render(data);
+    }
+  } catch(e) {
+    console.log('HTTP fetch failed, retrying...');
+    setTimeout(fetchHTTP, 10000);
+  }
+}
+
+// ── Init ────────────────────────────────────────────────────────
+connectWS();
+
+// Fallback HTTP si WebSocket échoue après 5s
+setTimeout(() => {
+  if (coins.length === 0) fetchHTTP();
+}, 5000);
+
+// Re-fetch HTTP toutes les 120s si pas de WebSocket
+setInterval(() => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) fetchHTTP();
+}, 120000);
+</script>
+</body>
+</html>

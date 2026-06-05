@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: cryptohunt-api
+    runtime: python
+    repo: https://github.com/AtmanTest/cryptohunt
+    branch: main
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+    domains:
+      - cryptohunt.onrender.com

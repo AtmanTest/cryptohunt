@@ -1,0 +1,52 @@
+name: CryptoHunt Snapshot
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # toutes les 30 min
+  workflow_dispatch:          # lancement manuel
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    name: Capture Market Snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Fetch snapshot from Render API
+        run: |
+          curl -s --max-time 10 https://cryptohunt.onrender.com/api/snapshot \
+            -o .snapshots/latest.json || echo '{"error":"fetch_failed"}' > .snapshots/latest.json
+
+      - name: Archive historical snapshot
+        run: |
+          mkdir -p .snapshots/history
+          TS=$(date -u +%Y%m%d_%H%M%S)
+          cp .snapshots/latest.json ".snapshots/history/snapshot_${TS}.json"
+
+      - name: Keep only last 336 snapshots (7 days @ 30min)
+        run: |
+          cd .snapshots/history
+          ls -t snapshot_*.json | tail -n +337 | xargs -r rm
+
+      - name: Build summary
+        run: |
+          if jq -e '.coins' .snapshots/latest.json > /dev/null 2>&1; then
+            COUNT=$(jq '.count // (.coins | length)' .snapshots/latest.json)
+            TS=$(jq -r '.ts // "unknown"' .snapshots/latest.json)
+            echo "📸 Snapshot saved: $COUNT coins at $TS" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Snapshot fetch failed or empty" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Commit & Push
+        run: |
+          git config user.name "cryptohunt-bot"
+          git config user.email "bot@cryptohunt.app"
+          git add .snapshots/
+          git diff --cached --quiet || git commit -m "📸 snapshot $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push
