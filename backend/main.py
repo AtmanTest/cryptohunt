@@ -13,10 +13,18 @@ app = FastAPI(title="CryptoHunt API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 _cache = {"data": None, "meta": {}, "ts": 0, "raw": None}
+LOG_BUFFER: list[str] = []
 LOCK = asyncio.Lock()
 WEBSOCKETS: set[WebSocket] = set()
 
 # ── Helpers ───────
+
+def log(msg: str):
+    """Log + buffer for /api/logs endpoint."""
+    print(msg)
+    LOG_BUFFER.append(msg)
+    if len(LOG_BUFFER) > 100:
+        LOG_BUFFER[:50] = []
 
 def rsi(prices: list[float], period: int = 14) -> float | None:
     if len(prices) < period + 1: return None
@@ -75,12 +83,12 @@ async def fetch_coindesk_page(client: httpx.AsyncClient, page: int = 1) -> list[
                                 headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
         if resp.status_code == 200:
             data = resp.json().get("Data", {}).get("LIST", [])
-            print(f"[CRYPTOHUNT] CoinDesk page {page}: {len(data)} assets")
+            log(f"[CRYPTOHUNT] CoinDesk page {page}: {len(data)} assets")
             return data
-        print(f"[CRYPTOHUNT] CoinDesk page {page}: HTTP {resp.status_code}")
+        log(f"[CRYPTOHUNT] CoinDesk page {page}: HTTP {resp.status_code}")
         return []
     except Exception as e:
-        print(f"[CRYPTOHUNT] CoinDesk page {page} error: {e}")
+        log(f"[CRYPTOHUNT] CoinDesk page {page} error: {e}")
         return []
 
 async def fetch_coinpaprika(client: httpx.AsyncClient) -> list[dict]:
@@ -89,12 +97,12 @@ async def fetch_coinpaprika(client: httpx.AsyncClient) -> list[dict]:
         resp = await client.get("https://api.coinpaprika.com/v1/tickers?limit=250", timeout=20)
         if resp.status_code == 200:
             data = resp.json()
-            print(f"[CRYPTOHUNT] CoinPaprika: {len(data)} coins")
+            log(f"[CRYPTOHUNT] CoinPaprika: {len(data)} coins")
             return data
-        print(f"[CRYPTOHUNT] CoinPaprika status: {resp.status_code}")
+        log(f"[CRYPTOHUNT] CoinPaprika status: {resp.status_code}")
         return []
     except Exception as e:
-        print(f"[CRYPTOHUNT] CoinPaprika error: {e}")
+        log(f"[CRYPTOHUNT] CoinPaprika error: {e}")
         return []
 
 async def fetch_global_meta(client: httpx.AsyncClient) -> dict:
@@ -109,7 +117,7 @@ async def fetch_global_meta(client: httpx.AsyncClient) -> dict:
             if d:
                 meta["fear_greed"] = {"value": int(d[0].get("value", 50)), "classification": d[0].get("value_classification", "Neutral")}
     except Exception as e:
-        print(f"[CRYPTOHUNT] F&G error: {e}")
+        log(f"[CRYPTOHUNT] F&G error: {e}")
     # DeFiLlama TVL - using protocols (lightweight enough)
     try:
         resp = await client.get("https://api.llama.fi/protocols", timeout=15,
@@ -125,9 +133,9 @@ async def fetch_global_meta(client: httpx.AsyncClient) -> dict:
                     count += 1
             if total > 0:
                 meta["defi_tvl"] = {"value": total, "chains": count, "source": "defillama"}
-                print(f"[CRYPTOHUNT] DeFi TVL: ${total/1e9:.1f}B from {count} protocols")
+                log(f"[CRYPTOHUNT] DeFi TVL: ${total/1e9:.1f}B from {count} protocols")
     except Exception as e:
-        print(f"[CRYPTOHUNT] DeFiLlama error: {e}")
+        log(f"[CRYPTOHUNT] DeFiLlama error: {e}")
     # Dominance from CoinDesk (already fetched, but we calculate from top 100)
     try:
         cd_url = f"{COINDESK_BASE}/top/list"
@@ -144,9 +152,9 @@ async def fetch_global_meta(client: httpx.AsyncClient) -> dict:
                     if sym == "BTC": meta["btc_dominance"] = round(cap / total * 100, 1)
                     if sym == "ETH": meta["eth_dominance"] = round(cap / total * 100, 1)
                 meta["total_mcap"] = int(total)
-                print(f"[CRYPTOHUNT] Dominance: BTC {meta['btc_dominance']}% / ETH {meta['eth_dominance']}%, total ${total/1e9:.1f}B")
+                log(f"[CRYPTOHUNT] Dominance: BTC {meta['btc_dominance']}% / ETH {meta['eth_dominance']}%, total ${total/1e9:.1f}B")
     except Exception as e:
-        print(f"[CRYPTOHUNT] Dominance error: {e}")
+        log(f"[CRYPTOHUNT] Dominance error: {e}")
     return meta
 
 def normalize_coindesk(a: dict) -> dict:
@@ -201,53 +209,53 @@ def normalize_coinpaprika(a: dict) -> dict:
 # ── Refresh ───
 
 async def refresh_cache():
-    print("[CRYPTOHUNT] refresh_cache START")
+    log("[CRYPTOHUNT] refresh_cache START")
     async with httpx.AsyncClient() as client:
         try:
             # Tier 1 — CoinDesk: 3 pages of 100 = top 300 by market cap
             page1 = await fetch_coindesk_page(client, 1)
-            print(f"[CRYPTOHUNT] page1: {len(page1)} items")
+            log(f"[CRYPTOHUNT] page1: {len(page1)} items")
             page2 = await fetch_coindesk_page(client, 2)
-            print(f"[CRYPTOHUNT] page2: {len(page2)} items")
+            log(f"[CRYPTOHUNT] page2: {len(page2)} items")
             page3 = await fetch_coindesk_page(client, 3)
-            print(f"[CRYPTOHUNT] page3: {len(page3)} items")
+            log(f"[CRYPTOHUNT] page3: {len(page3)} items")
             cd_assets = page1 + page2 + page3
-            print(f"[CRYPTOHUNT] cd_assets total: {len(cd_assets)}")
+            log(f"[CRYPTOHUNT] cd_assets total: {len(cd_assets)}")
 
             assets = []
             source = None
             if cd_assets:
                 try:
                     raw = [normalize_coindesk(a) for a in cd_assets]
-                    print(f"[CRYPTOHUNT] normalize_coindesk OK: {len(raw)} items")
+                    log(f"[CRYPTOHUNT] normalize_coindesk OK: {len(raw)} items")
                     assets = raw
                     source = "coindesk"
                 except Exception as norm_e:
-                    print(f"[CRYPTOHUNT] normalize_coindesk failed: {norm_e}")
+                    log(f"[CRYPTOHUNT] normalize_coindesk failed: {norm_e}")
                     import traceback; traceback.print_exc()
             else:
-                print("[CRYPTOHUNT] CoinDesk empty, trying CoinPaprika fallback")
+                log("[CRYPTOHUNT] CoinDesk empty, trying CoinPaprika fallback")
                 pap = await fetch_coinpaprika(client)
                 if pap:
                     total_mcap = sum(
                         float(a.get("quotes", {}).get("USD", {}).get("market_cap", 0) or 0)
                         for a in pap
                     )
-                    print(f"[CRYPTOHUNT] Paprika fallback: {len(pap)} coins, total mcap {total_mcap}")
+                    log(f"[CRYPTOHUNT] Paprika fallback: {len(pap)} coins, total mcap {total_mcap}")
                     assets = [normalize_coinpaprika(a) for a in pap]
                     source = "coinpaprika"
 
-            print(f"[CRYPTOHUNT] assets after source selection: {len(assets)} from {source}")
+            log(f"[CRYPTOHUNT] assets after source selection: {len(assets)} from {source}")
             if not assets:
-                print("[CRYPTOHUNT] No data from any source, keeping old cache")
+                log("[CRYPTOHUNT] No data from any source, keeping old cache")
                 return
 
             meta = await fetch_global_meta(client)
-            print(f"[CRYPTOHUNT] meta: fear_greed={meta.get('fear_greed')}, defi_tvl={bool(meta.get('defi_tvl'))}, btc_dom={meta.get('btc_dominance')}")
+            log(f"[CRYPTOHUNT] meta: fear_greed={meta.get('fear_greed')}, defi_tvl={bool(meta.get('defi_tvl'))}, btc_dom={meta.get('btc_dominance')}")
 
             if assets and assets[0]["symbol"] == "BTC":
                 meta["btc"] = assets.pop(0)
-                print(f"[CRYPTOHUNT] BTC extracted: ${meta['btc']['price_raw']}")
+                log(f"[CRYPTOHUNT] BTC extracted: ${meta['btc']['price_raw']}")
 
             top_300 = assets[:300]
             for i, c in enumerate(top_300):
@@ -258,9 +266,9 @@ async def refresh_cache():
                 _cache["meta"] = meta
                 _cache["ts"] = now
                 _cache["raw"] = assets
-                print(f"[CRYPTOHUNT] CACHE SET: {len(top_300)} coins, ts={now}")
+                log(f"[CRYPTOHUNT] CACHE SET: {len(top_300)} coins, ts={now}")
 
-            print(f"[CRYPTOHUNT] Cache rafraîchi : {len(top_300)} coins via {source}, {datetime.now().isoformat()}")
+            log(f"[CRYPTOHUNT] Cache rafraîchi : {len(top_300)} coins via {source}, {datetime.now().isoformat()}")
 
             payload = json.dumps({"type": "update", "coins": top_300, "meta": meta, "ts": now})
             dead = set()
@@ -269,14 +277,14 @@ async def refresh_cache():
                 except: dead.add(ws)
             WEBSOCKETS -= dead
         except Exception as e:
-            print(f"[CRYPTOHUNT] refresh_cache error: {e}")
+            log(f"[CRYPTOHUNT] refresh_cache error: {e}")
             import traceback; traceback.print_exc()
 
 # ── Startup ───
 
 @app.on_event("startup")
 async def startup():
-    print("[CRYPTOHUNT] Server starting, first refresh...")
+    log("[CRYPTOHUNT] Server starting, first refresh...")
     await refresh_cache()
     asyncio.create_task(_periodic_refresh())
 
@@ -395,6 +403,11 @@ async def websocket_endpoint(ws: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+
+@app.get("/api/logs")
+async def get_logs():
+    """Dernières lignes de log du serveur."""
+    return {"logs": LOG_BUFFER[-80:]}
 
 @app.get("/api/diag")
 async def diag():
